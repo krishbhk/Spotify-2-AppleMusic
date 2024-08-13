@@ -6,9 +6,14 @@ import json
 from time import sleep
 import requests
 import os
+import re
 
 # Delay (in seconds) to wait between tracks (to avoid getting rate limted) - reduce at own risk
 delay = 1
+
+modes = ["add", "like"]
+DEFAULT_MODE = "add"
+spotify_fav_pattern = r'liked\.csv$'
 
 # Checking if the command is correct
 if len(argv) > 1 and argv[1]:
@@ -191,7 +196,7 @@ def fetch_equivalent_song_id(session, song_id):
 
 
 # Function to add a song to a playlist
-def add_song_to_playlist(session, song_id, playlist_id, playlist_track_ids, playlist_name):
+def add_song_to_playlist(session, song_id, playlist_id, playlist_track_ids, playlist_name, mode):
     song_id=str(song_id)
     equivalent_song_id = fetch_equivalent_song_id(session, song_id)
     if equivalent_song_id != song_id: 
@@ -200,19 +205,28 @@ def add_song_to_playlist(session, song_id, playlist_id, playlist_track_ids, play
             print(f"Song {equivalent_song_id} already in playlist {playlist_name}!\n")
             return "DUPLICATE"
         song_id = equivalent_song_id
-    try:   
-        request = session.post(f"https://amp-api.music.apple.com/v1/me/library/playlists/{playlist_id}/tracks", json={"data":[{"id":f"{song_id}","type":"songs"}]})
-        # Checking if the request is successful
-        if request.status_code == 200 or request.status_code == 201 or request.status_code== 204:
-            print(f"Song {song_id} added successfully!\n\n")
-            return "OK"
-        # If not, print the error code
-        else: 
-            print(f"Error {request.status_code} while adding song {song_id}: {request.reason}\n")
+
+    if mode == "add":
+        try:   
+            request = session.post(f"https://amp-api.music.apple.com/v1/me/library/playlists/{playlist_id}/tracks", json={"data":[{"id":f"{song_id}","type":"songs"}]})
+            # Checking if the request is successful
+            if request.status_code == 200 or request.status_code == 201 or request.status_code== 204:
+                print(f"Song {song_id} added successfully!\n\n")
+                return "OK"
+            # If not, print the error code
+            else: 
+                print(f"Error {request.status_code} while adding song {song_id}: {request.reason}\n")
+                return "ERROR"
+        except:
+            print(f"HOST ERROR: Apple Music might have blocked the connection during the add of {song_id}!\nPlease wait a few minutes and try again.\nIf the problem persists, please contact the developer.\n")
             return "ERROR"
-    except:
-        print(f"HOST ERROR: Apple Music might have blocked the connection during the add of {song_id}!\nPlease wait a few minutes and try again.\nIf the problem persists, please contact the developer.\n")
-        return "ERROR"
+    elif mode == "like":
+        try:
+            request = session.post(f"https://amp-api.music.apple.com/v1/me/favorites?art[url]=f&ids[songs]={song_id}&l=en-US&platform=web")
+            pass
+        except Exception as e:
+            raise Exception(f"Error {e} while adding song {song_id} to playlist {playlist_name}!")
+        pass
 
 def get_playlist_track_ids(session, playlist_id):
     # test if song is already in playlist
@@ -230,7 +244,8 @@ def get_playlist_track_ids(session, playlist_id):
         raise Exception(f"Error while getting playlist {playlist_id}!")
         return None
 # Opening session
-def create_playlist_and_add_song(file):
+def create_playlist_and_add_song(file, mode):
+    print("MODE::", mode)
     with requests.Session() as s:
         s.headers.update({
                     "Authorization": f"{token}",
@@ -277,60 +292,76 @@ def create_playlist_and_add_song(file):
         for row in file:
             n += 1
             # Trying to get the iTunes ID of the song
-            title, artist, album, album_artist, isrc = escape_apostrophes(
-                row[1]), escape_apostrophes(row[3]), escape_apostrophes(row[5]), escape_apostrophes(row[7]), escape_apostrophes(row[16])
-            track_id = match_isrc_to_itunes_id(s, album, album_artist, isrc)
-            if track_id:
-                isrc_based += 1
-            else:
-                print(f'No result found for {title} | {artist} | {album} with {isrc}. Trying text based search...')
-                track_id = get_itunes_id(title, artist, album)
+            try:
+                title, artist, album, album_artist, isrc = escape_apostrophes(
+                    row[1]), escape_apostrophes(row[3]), escape_apostrophes(row[5]), escape_apostrophes(row[7]), escape_apostrophes(row[16])
+                track_id = match_isrc_to_itunes_id(s, album, album_artist, isrc)
                 if track_id:
-                    text_based += 1
-            # If the song is found, add it to the playlist
-            if track_id:
-                if str(track_id) in playlist_track_ids:
-                    print(f'N°{n} | {title} | {artist} | {album} => {track_id}')
-                    print(f"Song {track_id} already in playlist {playlist_name}!\n")
-                    failed += 1
-                    continue
-                print(f'N°{n} | {title} | {artist} | {album} => {track_id}')
-                if delay >= 0.5:
-                    sleep(delay)
+                    isrc_based += 1
                 else:
-                    sleep(0.5)
-                result = add_song_to_playlist(s, track_id, playlist_identifier, playlist_track_ids, playlist_name)
-                if result == "OK": converted += 1
-                elif result == "ERROR":
+                    print(f'No result found for {title} | {artist} | {album} with {isrc}. Trying text based search...')
+                    track_id = get_itunes_id(title, artist, album)
+                    if track_id:
+                        text_based += 1
+                # If the song is found, add it to the playlist
+                if track_id:
+                    if str(track_id) in playlist_track_ids:
+                        print(f'N°{n} | {title} | {artist} | {album} => {track_id}')
+                        print(f"Song {track_id} already in playlist {playlist_name}!\n")
+                        failed += 1
+                        continue
+                    print(f'N°{n} | {title} | {artist} | {album} => {track_id}')
+                    if delay >= 0.5:
+                        sleep(delay)
+                    else:
+                        sleep(0.5)
+                    result = add_song_to_playlist(s, track_id, playlist_identifier, playlist_track_ids, playlist_name, mode)
+                    if result == "OK": converted += 1
+                    elif result == "ERROR":
+                        with open(f'{playlist_name}_noresult.txt', 'a+', encoding='utf-8') as f:
+                            f.write(f'{title} | {artist} | {album} => UNABLE TO ADD TO PLAYLIST\n')
+                            f.write('\n')
+                        failed += 1
+                    elif result == "DUPLICATE": failed += 1
+                # If not, write it in a file
+                else:
+                    print(f'N°{n} | {title} | {artist} | {album} => NOT FOUND\n')
                     with open(f'{playlist_name}_noresult.txt', 'a+', encoding='utf-8') as f:
-                        f.write(f'{title} | {artist} | {album} => UNABLE TO ADD TO PLAYLIST\n')
+                        f.write(f'{title} | {artist} | {album} => NOT FOUND\n')
                         f.write('\n')
                     failed += 1
-                elif result == "DUPLICATE": failed += 1
-            # If not, write it in a file
-            else:
-                print(f'N°{n} | {title} | {artist} | {album} => NOT FOUND\n')
+                sleep(delay)
+            except KeyboardInterrupt:
+                print("KeyboardInterrupt: Program interrupted by user.")
+            except Exception as err:
+                print(f'N°{n} | {title} | {artist} | {album} => {err}\n')
                 with open(f'{playlist_name}_noresult.txt', 'a+', encoding='utf-8') as f:
-                    f.write(f'{title} | {artist} | {album} => NOT FOUND\n')
+                    f.write(f'{title} | {artist} | {album} => {err}\n')
                     f.write('\n')
-                failed += 1
-            sleep(delay)
+                    failed += 1
     # Printing the stats report
     converted_percentage = round(converted / n * 100) if n > 0 else 100
     print(f'\n - STAT REPORT -\nPlaylist Songs: {n}\nConverted Songs: {converted}\nFailed Songs: {failed}\nPlaylist converted at {converted_percentage}%\n\nConverted using ISRC: {isrc_based}\nConverted using text based search: {text_based}\n\n')
 
 
 if __name__ == "__main__":
+    
     if len(argv) > 1 and argv[1]:
+        if len(argv) > 2 and argv[2] and argv[2] in modes:
+            DEFAULT_MODE = argv[2]
         if ".csv" in argv[1]:
-            create_playlist_and_add_song(argv[1])
+            if re.search(spotify_fav_pattern, argv[1]):
+                DEFAULT_MODE = "like"
+            create_playlist_and_add_song(argv[1], DEFAULT_MODE)
         else:
             # get all csv files in the directory argv[1]
             files = [f for f in os.listdir(argv[1]) if os.path.isfile(os.path.join(argv[1], f))]
             # loop through all csv files
             for file in files:
                 if ".csv" in file:
-                    create_playlist_and_add_song(os.path.join(argv[1], file))
+                    if re.search(spotify_fav_pattern, file):
+                        DEFAULT_MODE = "like"
+                    create_playlist_and_add_song(os.path.join(argv[1], file), DEFAULT_MODE)
 
 # Developed by @therealmarius on GitHub
 # Based on the work of @simonschellaert on GitHub
